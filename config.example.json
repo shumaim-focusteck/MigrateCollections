@@ -1,0 +1,22 @@
+{
+  "mysql": {
+    "host": "localhost",
+    "port": 3306,
+    "user": "",
+    "password": "",
+    "database": ""
+  },
+  "mssql": {
+    "conn_str": "DRIVER={ODBC Driver 18 for SQL Server};SERVER=your-server;DATABASE=your-db;UID=your-user;PWD=your-password;TrustServerCertificate=yes"
+  },
+  "tuning": {
+    "batch_size": 500,
+    "output_dir": "output",
+    "checkpoint_file": "migration_checkpoint.json",
+    "log_file": "migration.log"
+  },
+  "filters": {
+    "campaign_id_min": 1,
+    "campaign_id_max": 14491
+  }
+}
