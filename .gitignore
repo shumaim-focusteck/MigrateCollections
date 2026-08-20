@@ -1,6 +1,7 @@
 output/
 migration_checkpoint.json
 migration.log
+migration_*.log
 __pycache__/
 *.pyc
 .venv/

@@ -29,7 +29,13 @@ class RowResult:
     collection_type_id: Optional[int] = None
     # Both keyed by v3 column name (e.g. "TopFileUrl"). source_by_column holds
     # every file URL v2 actually had, whether or not it ended up written this
-    # run; written_by_column holds only the ones actually written (a column
-    # present in source but absent here was skipped as already-populated).
+    # run; written_by_column holds only the ones actually written this run.
     source_by_column: Dict[str, str] = field(default_factory=dict)
     written_by_column: Dict[str, str] = field(default_factory=dict)
+    # Columns that were *not* attempted this run because v3 already had a
+    # value for them (row-level idempotency). Non-empty only on a
+    # success/failed row that also had some already-populated columns
+    # alongside the ones actually attempted; record_result() logs these to
+    # the skipped CSV in addition to the row's main success/failed entry.
+    already_updated_source: Dict[str, str] = field(default_factory=dict)
+    already_updated_existing: Dict[str, str] = field(default_factory=dict)

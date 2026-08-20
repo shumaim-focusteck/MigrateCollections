@@ -17,6 +17,7 @@ and retrying failures.
 import argparse
 import logging
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -30,6 +31,11 @@ from migrate_collections.models import Stats
 from migrate_collections.mssql_dest import connect_mssql
 from migrate_collections.mysql_source import connect_mysql
 from migrate_collections.shutdown import install_sigint_handler
+
+
+def _timestamped(path: Path, run_id: str) -> Path:
+    """`foo.csv` -> `foo_20260820_181530.csv`, same directory/suffix."""
+    return path.with_name(f"{path.stem}_{run_id}{path.suffix}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -62,7 +68,13 @@ def main() -> None:
 
     # 1. Load DB connection strings / batch size / output paths from config.json.
     cfg: Config = load_config(args.config)
-    setup_logging(cfg.log_file)
+    # Every run gets its own success/skipped CSVs and log file, so nothing
+    # from a previous run is ever overwritten. migrated_failed.csv is the
+    # one exception — it stays a fixed, persistent name (see step 4) since
+    # --retry-failed depends on reading it back in and rewriting it.
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = _timestamped(cfg.log_file, run_id)
+    setup_logging(log_file)
     # 2. Ctrl+C during a run should finish the in-flight batch and exit cleanly
     #    instead of dying mid-transaction; see migrate_collections/shutdown.py.
     install_sigint_handler()
@@ -89,15 +101,18 @@ def main() -> None:
     campaign_cache: Dict[int, Optional[int]] = {}
     collection_cache: Dict[int, Optional[int]] = {}
 
-    # 4. Open the three per-record CSV loggers. success/skipped always append
-    #    across runs; the failed-rows CSV is opened in "w" (truncate) mode
-    #    only for --retry-failed, since that pass rewrites it from scratch.
-    success_logger = CsvLogger(cfg.output_dir / SUCCESS_CSV, SUCCESS_HEADER)
-    skipped_logger = CsvLogger(cfg.output_dir / SKIPPED_CSV, SKIPPED_HEADER)
+    # 4. Open the three per-record CSV loggers. success/skipped are fresh,
+    #    uniquely-named files every run (see run_id above); the failed-rows
+    #    CSV keeps its fixed name, opened in "w" (truncate) mode only for
+    #    --retry-failed, since that pass rewrites it from scratch.
+    success_path = _timestamped(cfg.output_dir / SUCCESS_CSV, run_id)
+    skipped_path = _timestamped(cfg.output_dir / SKIPPED_CSV, run_id)
+    failed_path = cfg.output_dir / FAILED_CSV
+    success_logger = CsvLogger(success_path, SUCCESS_HEADER)
+    skipped_logger = CsvLogger(skipped_path, SKIPPED_HEADER)
 
     try:
         if args.retry_failed:
-            failed_path = cfg.output_dir / FAILED_CSV
             ids_to_retry = load_failed_ids(failed_path)
             failed_logger = CsvLogger(failed_path, FAILED_HEADER, mode="w")
             run_retry(
@@ -107,7 +122,7 @@ def main() -> None:
                 limit=args.limit,
             )
         else:
-            failed_logger = CsvLogger(cfg.output_dir / FAILED_CSV, FAILED_HEADER)
+            failed_logger = CsvLogger(failed_path, FAILED_HEADER)
             run_normal(
                 cfg, args.dry_run, mysql_conn, mssql_conn, mssql_cursor, blob_container,
                 campaign_cache, collection_cache,
@@ -125,7 +140,7 @@ def main() -> None:
         mssql_conn.close()
 
     elapsed = time.monotonic() - start_time
-    print_summary(stats, elapsed, cfg.output_dir, args.dry_run)
+    print_summary(stats, elapsed, success_path, failed_path, skipped_path, args.dry_run)
 
 
 if __name__ == "__main__":

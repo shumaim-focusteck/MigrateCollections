@@ -1,9 +1,12 @@
 """Per-row decision logic: parse -> resolve IDs -> re-host files -> insert/update/skip -> record.
 
-This is the only place that implements the column-level idempotency rule:
-a v3 column is written if and only if it's currently NULL/empty and the
-source has a non-empty value for it. An existing value is never overwritten.
-Only columns that will actually be written get re-hosted in blob storage,
+This is the only place that implements the column-level idempotency rule: a
+v3 column is written if its current value doesn't match the deterministic
+blob URL this file would get (blob_storage.compute_blob_url()) — covering
+both an empty column and one holding some other/stale URL. A column already
+holding exactly that URL is left untouched (see "already_updated" in the
+skipped CSV). Only columns that will actually be written get re-hosted in
+blob storage,
 via blob_storage.upload_file_columns() (itself idempotent per blob, keyed on
 campaign_id_v3). A brand-new row is inserted bare first (to obtain a v3_id
 for the later UPDATE) before files are uploaded and the row updated with the
@@ -18,7 +21,7 @@ from typing import Any, Dict, Optional
 import pyodbc
 from azure.storage.blob import ContainerClient
 
-from .blob_storage import upload_file_columns
+from .blob_storage import compute_blob_url, upload_file_columns
 from .constants import FILE_COLUMN_MAP, V3_ID_COLUMN
 from .csv_logger import CsvLogger
 from .models import RowResult, Stats
@@ -88,18 +91,45 @@ def process_row(
         action = "inserted"
         v3_id, _ = insert_v3_row(mssql_cursor, v3_campaign_id, collection_type_id, {}, dry_run)
         to_fill_source = file_columns
+        already_updated_source: Dict[str, str] = {}
+        already_updated_existing: Dict[str, str] = {}
     else:
         action = "updated"
         v3_id = existing[V3_ID_COLUMN]
-        # Column-level idempotency: only fill columns that are currently
-        # NULL/empty in v3. Never overwrite a column that already has a
-        # value, even if the source value differs.
-        to_fill_source = {col: url for col, url in file_columns.items() if not existing.get(col)}
+        already_updated_source = {}
+        already_updated_existing = {}
+        to_fill_source = {}
+        if dry_run:
+            # No real container/account to compute a comparable candidate
+            # URL against in dry-run -> fall back to the simpler
+            # empty-vs-non-empty check. Only affects what the preview
+            # *shows*; nothing is ever written in dry-run either way.
+            for col, url in file_columns.items():
+                if existing.get(col):
+                    already_updated_source[col] = url
+                    already_updated_existing[col] = existing[col]
+                else:
+                    to_fill_source[col] = url
+        else:
+            # Column-level idempotency: a column is written if its current
+            # value doesn't match the deterministic blob URL this file
+            # would get — covering both an empty column and one holding
+            # some other/stale value (e.g. from before a blob-path scheme
+            # change). A column already holding exactly that URL is left
+            # untouched, logged instead as an "already_updated" skip.
+            for col, url in file_columns.items():
+                candidate_url = compute_blob_url(blob_container, v3_campaign_id, col, url)
+                current = existing.get(col)
+                if current and current == candidate_url:
+                    already_updated_source[col] = url
+                    already_updated_existing[col] = current
+                else:
+                    to_fill_source[col] = url
         if not to_fill_source:
             return RowResult(
                 status="skipped", v2_id=v2_id, reason="all_columns_already_populated",
                 campaign_id_v3=v3_campaign_id, collection_type_id=collection_type_id,
-                source_by_column=file_columns,
+                source_by_column=file_columns, written_by_column=already_updated_existing,
             )
 
     # Every column is attempted independently — a bad file in one column
@@ -127,6 +157,7 @@ def process_row(
             # a column with a source cell but no written cell is the one(s)
             # that failed (error_message says why, per column).
             source_by_column=file_columns, written_by_column=to_fill,
+            already_updated_source=already_updated_source, already_updated_existing=already_updated_existing,
         )
 
     return RowResult(
@@ -136,16 +167,17 @@ def process_row(
         # source_by_column: every file v2 had for this row, written or not.
         # written_by_column: only the ones actually written this run.
         source_by_column=file_columns, written_by_column=to_fill,
+        already_updated_source=already_updated_source, already_updated_existing=already_updated_existing,
     )
 
 
-def _file_url_cells(result: RowResult) -> list:
+def _file_url_cells(source_by_column: Dict[str, str], target_by_column: Dict[str, str]) -> list:
     """One source/target cell per FILE_COLUMN_MAP entry (e.g. "top_file",
-    "TopFileUrl"), blank where that file wasn't in v2 / wasn't written."""
+    "TopFileUrl"), blank where that file has no entry in the given dicts."""
     cells = []
     for v3_column in FILE_COLUMN_MAP.values():
-        cells.append(result.source_by_column.get(v3_column, ""))
-        cells.append(result.written_by_column.get(v3_column, ""))
+        cells.append(source_by_column.get(v3_column, ""))
+        cells.append(target_by_column.get(v3_column, ""))
     return cells
 
 
@@ -171,7 +203,7 @@ def record_result(
             result.campaign_id_v3,
             result.collection_type_id,
             action,
-            *_file_url_cells(result),
+            *_file_url_cells(result.source_by_column, result.written_by_column),
             now,
         ])
         if result.action == "inserted":
@@ -182,7 +214,7 @@ def record_result(
     elif result.status == "skipped":
         skipped_logger.write_row([
             result.v2_id, result.campaign_id_v3, result.collection_type_id, result.reason,
-            *_file_url_cells(result),
+            *_file_url_cells(result.source_by_column, result.written_by_column),
             now,
         ])
         stats.skipped += 1
@@ -190,7 +222,19 @@ def record_result(
     else:
         failed_logger.write_row([
             result.v2_id, result.campaign_id_v2, result.campaign_id_v3, result.collection_id_v2, result.reason,
-            *_file_url_cells(result),
+            *_file_url_cells(result.source_by_column, result.written_by_column),
             result.error or "", now,
         ])
         stats.failed += 1
+
+    # Regardless of the row's main outcome above, a success/failed row can
+    # also have columns that were skipped this run because v3 already had a
+    # value for them (row-level idempotency) — log those to the skipped CSV
+    # too, so they're never silently invisible. Not counted in stats.skipped
+    # (that tracks rows, not columns) to keep read == inserted+updated+skipped+failed.
+    if result.already_updated_source:
+        skipped_logger.write_row([
+            result.v2_id, result.campaign_id_v3, result.collection_type_id, "already_updated",
+            *_file_url_cells(result.already_updated_source, result.already_updated_existing),
+            now,
+        ])

@@ -16,7 +16,9 @@ def setup_logging(log_file: Path) -> None:
     )
 
 
-def print_summary(stats: Stats, elapsed: float, output_dir: Path, dry_run: bool) -> None:
+def print_summary(
+    stats: Stats, elapsed: float, success_csv: Path, failed_csv: Path, skipped_csv: Path, dry_run: bool
+) -> None:
     mode_note = " (DRY RUN — nothing was committed to v3)" if dry_run else ""
     summary = (
         "\n" + "=" * 60 + "\n"
@@ -27,9 +29,9 @@ def print_summary(stats: Stats, elapsed: float, output_dir: Path, dry_run: bool)
         f"  Skipped     : {stats.skipped}\n"
         f"  Failed      : {stats.failed}\n"
         f"  Elapsed     : {elapsed:.1f}s\n"
-        f"  Success CSV : {output_dir / 'migrated_success.csv'}\n"
-        f"  Failed CSV  : {output_dir / 'migrated_failed.csv'}\n"
-        f"  Skipped CSV : {output_dir / 'migrated_skipped.csv'}\n"
+        f"  Success CSV : {success_csv}\n"
+        f"  Failed CSV  : {failed_csv}\n"
+        f"  Skipped CSV : {skipped_csv}\n"
         + "=" * 60
     )
     logging.info(summary)

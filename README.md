@@ -1,7 +1,7 @@
 # MigrateCollections
 
 Migrates collection/file data from the legacy MySQL v2 table
-`kiosks_collections` into the SQL Server v3 table `CampaignCollections`.
+`kiosks_collections` into the SQL Server v3 table `CampaignArtCollections`.
 Each v2 file URL is downloaded and re-hosted in Azure Blob Storage; the v3
 row is written with the resulting blob URL, not the original v2 URL.
 
@@ -124,10 +124,12 @@ and exits cleanly.
 
 ## Retrying failures
 
-`output/migrated_failed.csv` accumulates rows that failed for any reason. Run
-with `--retry-failed` to reprocess only those v2 ids; the file is rewritten to
-contain only whatever still fails after the retry. Rows that succeed on retry
-are appended to `migrated_success.csv` as usual.
+`output/migrated_failed.csv` is the one output file that stays a fixed name
+and persists across runs (see "Output" below) — it accumulates rows that
+failed for any reason. Run with `--retry-failed` to reprocess only those v2
+ids; the file is rewritten to contain only whatever still fails after the
+retry. Rows that succeed on retry go to that run's own
+`migrated_success_<timestamp>.csv` as usual.
 
 ## File re-hosting
 
@@ -149,26 +151,24 @@ creation), same as it skips v3 writes.
 
 ## Output
 
-Three CSVs under `tuning.output_dir` (`migrated_success.csv`, `migrated_failed.csv`,
-`migrated_skipped.csv`) are appended to as the run progresses and flushed
-after every batch, so they stay accurate even if the process is killed.
+Three CSVs under `tuning.output_dir`, flushed after every batch so they stay
+accurate even if the process is killed:
+- `migrated_success_<run_id>.csv` and `migrated_skipped_<run_id>.csv` — a
+  fresh, uniquely-named file every run (`<run_id>` is that run's start time,
+  e.g. `20260820_181241`), so nothing from a previous run is ever
+  overwritten. `migration.log` gets the same per-run treatment
+  (`migration_<run_id>.log`, next to `config.json`).
+- `migrated_failed.csv` — the one exception, a fixed name that persists and
+  is rewritten across runs; see "Retrying failures" above for why.
 
-## Known gap
+## Column-level idempotency
 
-v3's `CampaignCollections` has a `CollectionName` column that nothing in v2
-provides — `kiosks_collections` has no name field. Inserts currently leave it
-untouched (relies on it being nullable or having a default). If it's
-`NOT NULL` with no default, inserts will fail until this is addressed.
-
-
-Ubuntu Installation
-
-sudo apt-get update
-sudo apt-get install -y python3-venv python3-pip build-essential curl git
-
-# 2. Microsoft's SQL Server ODBC driver (msodbcsql18) + dev headers pyodbc needs to compile
-curl -sSL -O https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/packages-microsoft-prod.deb
-sudo dpkg -i packages-microsoft-prod.deb
-rm packages-microsoft-prod.deb
-sudo apt-get update
-sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18 unixodbc-dev
+A v3 file column is written if its current value doesn't already match the
+deterministic blob URL that file would get (see "File re-hosting" above) —
+covering both an empty column and one holding some other/stale URL (e.g.
+left over from before a blob-path scheme change). A column already holding
+exactly that URL is left untouched and logged to the skipped CSV with reason
+`already_updated` instead. `--dry-run` can't compute a real candidate URL
+without a live Azure connection, so its preview falls back to a simpler
+empty-vs-non-empty check — this only affects what the preview *shows*,
+never what a real run actually does.

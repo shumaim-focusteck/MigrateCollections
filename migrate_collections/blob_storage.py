@@ -3,7 +3,10 @@
 Each file gets a deterministic blob path: `{campaign_id_v3}/{v3_column}/{filename}`.
 That determinism is what makes upload idempotent — a blob that's already
 there (from a prior run, including one interrupted mid-batch before the v3
-transaction committed) is reused instead of re-downloaded/re-uploaded.
+transaction committed) is reused instead of re-downloaded/re-uploaded — and
+lets processor.py compare a v3 column's current value against this file's
+would-be blob URL (compute_blob_url()) before deciding whether it even
+needs a write.
 """
 
 from typing import Dict, Optional, Tuple
@@ -43,6 +46,14 @@ def blob_name_for(campaign_id_v3: int, column: str, source_url: str) -> str:
     """Deterministic blob path for one file: {campaign_id_v3}/{column}/{filename}."""
     filename = urlparse(source_url).path.rsplit("/", 1)[-1] or "file"
     return f"{campaign_id_v3}/{column}/{filename}"
+
+
+def compute_blob_url(container: ContainerClient, campaign_id_v3: int, column: str, source_url: str) -> str:
+    """The deterministic blob URL `source_url` would get, without touching
+    the network — pure string construction from the container/blob name.
+    Lets callers decide "is v3's current value already correct" before
+    committing to an upload attempt."""
+    return container.get_blob_client(blob_name_for(campaign_id_v3, column, source_url)).url
 
 
 def upload_file_url(
