@@ -44,9 +44,8 @@ SUCCESS_HEADER = [
     "collection_type_id", "action",
 ] + _FILE_URL_COLUMNS + ["timestamp"]
 FAILED_HEADER = [
-    "v2_id", "campaign_id_v2", "collection_id_v2", "reason",
-    "error_message", "timestamp",
-]
+    "v2_id", "campaign_id_v2", "campaign_id_v3", "collection_id_v2", "reason",
+] + _FILE_URL_COLUMNS + ["error_message", "timestamp"]
 SKIPPED_HEADER = [
-    "v2_id", "campaign_id_v3", "collection_type_id", "reason", "timestamp",
-]
+    "v2_id", "campaign_id_v3", "collection_type_id", "reason",
+] + _FILE_URL_COLUMNS + ["timestamp"]

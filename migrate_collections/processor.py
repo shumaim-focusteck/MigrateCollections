@@ -56,6 +56,7 @@ def process_row(
             status="failed", v2_id=v2_id, reason="unresolved_campaign",
             error=f"No v3 campaign mapping found for v2 campaign_id={v2_campaign_id}",
             campaign_id_v2=v2_campaign_id, collection_id_v2=v2_collection_id,
+            source_by_column=file_columns,
         )
 
     collection_type_id = resolve_collection_type_id(v2_collection_id, mssql_cursor, collection_cache)
@@ -63,7 +64,8 @@ def process_row(
         return RowResult(
             status="failed", v2_id=v2_id, reason="unresolved_collection",
             error=f"No v3 collection type mapping found for v2 collection_id={v2_collection_id}",
-            campaign_id_v2=v2_campaign_id, collection_id_v2=v2_collection_id,
+            campaign_id_v2=v2_campaign_id, campaign_id_v3=v3_campaign_id, collection_id_v2=v2_collection_id,
+            source_by_column=file_columns,
         )
 
     # Step 3: nothing to write at all -> skip rather than insert/update an
@@ -96,6 +98,7 @@ def process_row(
             return RowResult(
                 status="skipped", v2_id=v2_id, reason="all_columns_already_populated",
                 campaign_id_v3=v3_campaign_id, collection_type_id=collection_type_id,
+                source_by_column=file_columns,
             )
 
     # dry-run never actually inserts, so there's no real v3_id yet to key
@@ -103,20 +106,31 @@ def process_row(
     # preview; nothing is downloaded/uploaded/written either way.
     blob_id = v3_id if v3_id is not None else f"dryrun-pending-v2-{v2_id}"
 
-    try:
-        to_fill = upload_file_columns(blob_container, blob_id, to_fill_source, dry_run)
-    except Exception as exc:  # noqa: BLE001 - network/HTTP errors from the download/upload
-        if action == "inserted" and not dry_run:
-            # Undo the bare insert (still uncommitted within this batch's
-            # transaction) so a failed row never leaves an orphaned,
-            # file-less row behind in v3.
+    # Every column is attempted independently — a bad file in one column
+    # doesn't cost the others. Whatever succeeded gets persisted regardless
+    # of whether some columns failed alongside it.
+    to_fill, upload_errors = upload_file_columns(blob_container, blob_id, to_fill_source, dry_run)
+
+    if to_fill:
+        update_v3_row(mssql_cursor, v3_id, to_fill, dry_run)
+
+    if upload_errors:
+        if not to_fill and action == "inserted" and not dry_run:
+            # Nothing at all succeeded -> undo the bare insert (still
+            # uncommitted within this batch's transaction) so a fully
+            # failed row never leaves an orphaned, file-less row behind.
             delete_v3_row(mssql_cursor, v3_id)
+        error_message = "; ".join(f"{col}: {err}" for col, err in upload_errors.items())
         return RowResult(
-            status="failed", v2_id=v2_id, reason="blob_upload_failed", error=str(exc),
-            campaign_id_v2=v2_campaign_id, collection_id_v2=v2_collection_id,
+            status="failed", v2_id=v2_id, reason="blob_upload_failed", error=error_message,
+            campaign_id_v2=v2_campaign_id, campaign_id_v3=v3_campaign_id, collection_id_v2=v2_collection_id,
+            # source_by_column: every file v2 had for this row.
+            # written_by_column: only the columns that actually succeeded —
+            # a column with a source cell but no written cell is the one(s)
+            # that failed (error_message says why, per column).
+            source_by_column=file_columns, written_by_column=to_fill,
         )
 
-    update_v3_row(mssql_cursor, v3_id, to_fill, dry_run)
     return RowResult(
         status="success", v2_id=v2_id, action=action, v3_id=v3_id,
         campaign_id_v2=v2_campaign_id, campaign_id_v3=v3_campaign_id,
@@ -125,6 +139,16 @@ def process_row(
         # written_by_column: only the ones actually written this run.
         source_by_column=file_columns, written_by_column=to_fill,
     )
+
+
+def _file_url_cells(result: RowResult) -> list:
+    """One source/target cell per FILE_COLUMN_MAP entry (e.g. "top_file",
+    "TopFileUrl"), blank where that file wasn't in v2 / wasn't written."""
+    cells = []
+    for v3_column in FILE_COLUMN_MAP.values():
+        cells.append(result.source_by_column.get(v3_column, ""))
+        cells.append(result.written_by_column.get(v3_column, ""))
+    return cells
 
 
 def record_result(
@@ -142,12 +166,6 @@ def record_result(
         # In dry-run mode nothing was actually committed, so the action is
         # prefixed to make that unambiguous when reading the CSV later.
         action = f"would_{result.action}" if dry_run else result.action
-        # One source/target cell per FILE_COLUMN_MAP entry (e.g. "top_file",
-        # "TopFileUrl"), blank where that file wasn't in v2 / wasn't written.
-        file_url_cells = []
-        for v3_column in FILE_COLUMN_MAP.values():
-            file_url_cells.append(result.source_by_column.get(v3_column, ""))
-            file_url_cells.append(result.written_by_column.get(v3_column, ""))
         success_logger.write_row([
             result.v2_id,
             result.v3_id if result.v3_id is not None else "",
@@ -155,7 +173,7 @@ def record_result(
             result.campaign_id_v3,
             result.collection_type_id,
             action,
-            *file_url_cells,
+            *_file_url_cells(result),
             now,
         ])
         if result.action == "inserted":
@@ -165,13 +183,16 @@ def record_result(
 
     elif result.status == "skipped":
         skipped_logger.write_row([
-            result.v2_id, result.campaign_id_v3, result.collection_type_id, result.reason, now,
+            result.v2_id, result.campaign_id_v3, result.collection_type_id, result.reason,
+            *_file_url_cells(result),
+            now,
         ])
         stats.skipped += 1
 
     else:
         failed_logger.write_row([
-            result.v2_id, result.campaign_id_v2, result.collection_id_v2,
-            result.reason, result.error or "", now,
+            result.v2_id, result.campaign_id_v2, result.campaign_id_v3, result.collection_id_v2, result.reason,
+            *_file_url_cells(result),
+            result.error or "", now,
         ])
         stats.failed += 1

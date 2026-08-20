@@ -6,7 +6,7 @@ there (from a prior run, including one interrupted mid-batch before the v3
 transaction committed) is reused instead of re-downloaded/re-uploaded.
 """
 
-from typing import Dict, Optional, Union
+from typing import Dict, Optional, Tuple, Union
 from urllib.parse import urlparse
 
 import requests
@@ -74,11 +74,18 @@ def upload_file_url(
 
 def upload_file_columns(
     container: Optional[ContainerClient], v3_id: BlobId, columns: Dict[str, str], dry_run: bool
-) -> Dict[str, str]:
-    """Map {v3_column: source_url} -> {v3_column: blob_url}, uploading
-    whatever isn't already in blob storage. Raises on the first
-    download/upload failure — callers treat that as a failed row."""
-    return {
-        column: upload_file_url(container, v3_id, column, source_url, dry_run)
-        for column, source_url in columns.items()
-    }
+) -> Tuple[Dict[str, str], Dict[str, str]]:
+    """Attempts every column independently, even after one fails, so a
+    single bad file doesn't lose the others in the same row. Returns
+    (written, errors): written maps v3_column -> blob URL for columns that
+    succeeded; errors maps v3_column -> error message for columns that
+    didn't. Callers persist `written` regardless of whether `errors` is
+    non-empty, and report `errors` as a partial (or total) row failure."""
+    written: Dict[str, str] = {}
+    errors: Dict[str, str] = {}
+    for column, source_url in columns.items():
+        try:
+            written[column] = upload_file_url(container, v3_id, column, source_url, dry_run)
+        except Exception as exc:  # noqa: BLE001 - network/HTTP errors from the download/upload
+            errors[column] = str(exc)
+    return written, errors
