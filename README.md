@@ -134,14 +134,17 @@ are appended to `migrated_success.csv` as usual.
 Every v2 file URL that would be written to a v3 column is first downloaded
 and uploaded to Azure Blob Storage (`blob_storage.py`); the v3 column gets
 the resulting blob URL, never the original v2 URL. Each file's blob path is
-deterministic — `{v3_id}/{v3_column}/{filename}` — so if that blob already
-exists (e.g. from an earlier run interrupted before its batch committed to
-v3), it's reused instead of re-downloaded/re-uploaded. For a brand-new v3
-row, the row is inserted bare (match-key columns only) first to obtain its
-`v3_id`, then files are uploaded, then the row is updated with the resulting
-blob URLs; if upload fails, that bare insert is deleted before the failure
-is recorded, so v3 never ends up with an orphaned, file-less row.
-`--dry-run` skips all blob reads/writes entirely (including container
+deterministic — `{campaign_id_v3}/{v3_column}/{filename}` — so if that blob
+already exists (e.g. from an earlier run interrupted before its batch
+committed to v3), it's reused instead of re-downloaded/re-uploaded. Every
+row for the same campaign shares that campaign's folder, with one
+subfolder per file type. For a brand-new v3 row, the row is inserted bare
+(match-key columns only) first to obtain a `v3_id` for the later UPDATE,
+then files are uploaded (keyed on `campaign_id_v3`, so this works even in
+`--dry-run` where no real `v3_id` exists yet), then the row is updated with
+the resulting blob URLs; if upload fails, that bare insert is deleted
+before the failure is recorded, so v3 never ends up with an orphaned,
+file-less row. `--dry-run` skips all blob reads/writes entirely (including container
 creation), same as it skips v3 writes.
 
 ## Output

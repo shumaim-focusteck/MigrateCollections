@@ -5,9 +5,10 @@ a v3 column is written if and only if it's currently NULL/empty and the
 source has a non-empty value for it. An existing value is never overwritten.
 Only columns that will actually be written get re-hosted in blob storage,
 via blob_storage.upload_file_columns() (itself idempotent per blob, keyed on
-v3_id). A brand-new row is inserted bare first (to obtain a v3_id) before
-files are uploaded and the row updated with the resulting blob URLs; a
-failed upload deletes that bare insert rather than leaving a stray row.
+campaign_id_v3). A brand-new row is inserted bare first (to obtain a v3_id
+for the later UPDATE) before files are uploaded and the row updated with the
+resulting blob URLs; a failed upload deletes that bare insert rather than
+leaving a stray row.
 """
 
 import json
@@ -77,10 +78,10 @@ def process_row(
         )
 
     # Step 4: does a v3 row already exist for this (campaign, collection type)?
-    # Blob paths are keyed by v3_id, which doesn't exist yet for a brand-new
-    # row -> insert a bare row (match-key columns only) first to obtain one.
-    # This also means the insert and update paths converge below: both end
-    # up as "a v3_id, plus the file columns still needing a value".
+    # A bare row (match-key columns only) is inserted first for a brand-new
+    # row so there's a v3_id ready for the later UPDATE. This also means the
+    # insert and update paths converge below: both end up as "a v3_id, plus
+    # the file columns still needing a value".
     existing = fetch_existing_v3_row(mssql_cursor, v3_campaign_id, collection_type_id)
 
     if existing is None:
@@ -101,15 +102,12 @@ def process_row(
                 source_by_column=file_columns,
             )
 
-    # dry-run never actually inserts, so there's no real v3_id yet to key
-    # blob paths on -> fall back to a clearly-marked placeholder for the
-    # preview; nothing is downloaded/uploaded/written either way.
-    blob_id = v3_id if v3_id is not None else f"dryrun-pending-v2-{v2_id}"
-
     # Every column is attempted independently — a bad file in one column
     # doesn't cost the others. Whatever succeeded gets persisted regardless
-    # of whether some columns failed alongside it.
-    to_fill, upload_errors = upload_file_columns(blob_container, blob_id, to_fill_source, dry_run)
+    # of whether some columns failed alongside it. Blob paths are keyed on
+    # campaign_id_v3, which (unlike v3_id) is already known even in
+    # dry-run, so previews show the real path, not a placeholder.
+    to_fill, upload_errors = upload_file_columns(blob_container, v3_campaign_id, to_fill_source, dry_run)
 
     if to_fill:
         update_v3_row(mssql_cursor, v3_id, to_fill, dry_run)
