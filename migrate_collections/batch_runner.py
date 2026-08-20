@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 
 import pymysql
 import pyodbc
+from azure.storage.blob import ContainerClient
 
 from .checkpoint import load_checkpoint, save_checkpoint
 from .config import Config
@@ -26,6 +27,7 @@ def run_batch(
     rows: List[Dict[str, Any]],
     mssql_conn: pyodbc.Connection,
     mssql_cursor: pyodbc.Cursor,
+    blob_container: Optional[ContainerClient],
     campaign_cache: Dict[int, Optional[int]],
     collection_cache: Dict[int, Optional[int]],
     dry_run: bool,
@@ -47,7 +49,7 @@ def run_batch(
             max_id = row["id"] if max_id is None else max(max_id, row["id"])
 
             try:
-                result = process_row(row, mssql_cursor, campaign_cache, collection_cache, dry_run)
+                result = process_row(row, mssql_cursor, blob_container, campaign_cache, collection_cache, dry_run)
             except Exception as exc:  # noqa: BLE001 - a single row must not abort the batch
                 # Anything unexpected (bad connection, constraint violation, etc.)
                 # is recorded as a failed row instead of killing the whole batch.
@@ -85,6 +87,7 @@ def run_normal(
     mysql_conn: pymysql.connections.Connection,
     mssql_conn: pyodbc.Connection,
     mssql_cursor: pyodbc.Cursor,
+    blob_container: Optional[ContainerClient],
     campaign_cache: Dict[int, Optional[int]],
     collection_cache: Dict[int, Optional[int]],
     success_logger: CsvLogger,
@@ -135,7 +138,7 @@ def run_normal(
         # Everything for this batch - resolving IDs, deciding insert/update/
         # skip, and committing (or rolling back on --dry-run) - happens here.
         max_id = run_batch(
-            rows, mssql_conn, mssql_cursor, campaign_cache, collection_cache, dry_run,
+            rows, mssql_conn, mssql_cursor, blob_container, campaign_cache, collection_cache, dry_run,
             success_logger, failed_logger, skipped_logger, stats,
         )
         stats.read += len(rows)
@@ -175,6 +178,7 @@ def run_retry(
     mysql_conn: pymysql.connections.Connection,
     mssql_conn: pyodbc.Connection,
     mssql_cursor: pyodbc.Cursor,
+    blob_container: Optional[ContainerClient],
     campaign_cache: Dict[int, Optional[int]],
     collection_cache: Dict[int, Optional[int]],
     success_logger: CsvLogger,
@@ -203,7 +207,7 @@ def run_retry(
         rows = fetch_by_ids(mysql_conn, chunk)
         batch_num += 1
         run_batch(
-            rows, mssql_conn, mssql_cursor, campaign_cache, collection_cache, dry_run,
+            rows, mssql_conn, mssql_cursor, blob_container, campaign_cache, collection_cache, dry_run,
             success_logger, failed_logger, skipped_logger, stats,
         )
         stats.read += len(rows)

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from migrate_collections.batch_runner import load_failed_ids, run_normal, run_retry
+from migrate_collections.blob_storage import connect_blob_container
 from migrate_collections.config import Config, DEFAULT_CONFIG_PATH, load_config
 from migrate_collections.constants import FAILED_CSV, FAILED_HEADER, SKIPPED_CSV, SKIPPED_HEADER, SUCCESS_CSV, SUCCESS_HEADER
 from migrate_collections.csv_logger import CsvLogger
@@ -80,6 +81,8 @@ def main() -> None:
     mysql_conn = connect_mysql(cfg)
     mssql_conn = connect_mssql(cfg)
     mssql_cursor = mssql_conn.cursor()
+    # v2 file URLs are downloaded and re-hosted here; see blob_storage.py.
+    blob_container = connect_blob_container(cfg, args.dry_run)
 
     # In-memory caches so each distinct v2 campaign_id / collection_id only
     # needs one mapping-table lookup per run, no matter how many rows share it.
@@ -98,7 +101,7 @@ def main() -> None:
             ids_to_retry = load_failed_ids(failed_path)
             failed_logger = CsvLogger(failed_path, FAILED_HEADER, mode="w")
             run_retry(
-                cfg, args.dry_run, mysql_conn, mssql_conn, mssql_cursor,
+                cfg, args.dry_run, mysql_conn, mssql_conn, mssql_cursor, blob_container,
                 campaign_cache, collection_cache,
                 success_logger, failed_logger, skipped_logger, stats, ids_to_retry,
                 limit=args.limit,
@@ -106,7 +109,7 @@ def main() -> None:
         else:
             failed_logger = CsvLogger(cfg.output_dir / FAILED_CSV, FAILED_HEADER)
             run_normal(
-                cfg, args.dry_run, mysql_conn, mssql_conn, mssql_cursor,
+                cfg, args.dry_run, mysql_conn, mssql_conn, mssql_cursor, blob_container,
                 campaign_cache, collection_cache,
                 success_logger, failed_logger, skipped_logger, stats,
                 limit=args.limit,

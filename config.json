@@ -1,0 +1,26 @@
+{
+  "mysql": {
+    "host": "db-load-balancer-55478da415a8afc9.elb.us-east-1.amazonaws.com",
+    "port": 3306,
+    "user": "admin",
+    "password": "aefCMZF70RpOkdTC",
+    "database": "terraboost"
+  },
+  "mssql": {
+    "conn_str": "DRIVER={ODBC Driver 18 for SQL Server};SERVER=20.118.225.243,1433;DATABASE=Terraboost-Dev;UID=TBDevDBO;PWD=TerraB00st2025DBO!;Encrypt=yes;TrustServerCertificate=yes;MARS_Connection=yes;Connection Timeout=30;"
+  },
+  "azure_blob": {
+    "connection_string": "REPLACE_ME",
+    "container_name": "REPLACE_ME"
+  },
+  "tuning": {
+    "batch_size": 500,
+    "output_dir": "output",
+    "checkpoint_file": "migration_checkpoint.json",
+    "log_file": "migration.log"
+  },
+  "filters": {
+    "campaign_id_min": 1,
+    "campaign_id_max": 14491
+  }
+}

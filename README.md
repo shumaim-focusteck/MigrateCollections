@@ -2,6 +2,8 @@
 
 Migrates collection/file data from the legacy MySQL v2 table
 `kiosks_collections` into the SQL Server v3 table `CampaignCollections`.
+Each v2 file URL is downloaded and re-hosted in Azure Blob Storage; the v3
+row is written with the resulting blob URL, not the original v2 URL.
 
 ## Layout
 
@@ -16,6 +18,7 @@ migrate_collections/
   shutdown.py                    graceful Ctrl+C handling
   mysql_source.py                 v2 reads (connect, fetch_batch, fetch_by_ids)
   mssql_dest.py                    v3 reads/writes (connect, fetch/insert/update)
+  blob_storage.py                   downloads each v2 file URL and re-hosts it in Azure Blob Storage
   resolvers.py                      v2 -> v3 ID resolution — adapt these too
   transform.py                       parses the v2 `files` JSON column
   processor.py                        per-row insert/update/skip decision logic
@@ -24,12 +27,41 @@ migrate_collections/
 
 ## Setup
 
-1. `pip install -r requirements.txt`
+0. Install the system ODBC libraries `pyodbc` needs to talk to SQL Server —
+   these are OS packages, not something `requirements.txt`/`pip` can install:
+   - **macOS**: `brew install unixodbc`, then
+     `brew tap microsoft/mssql-release https://github.com/Microsoft/homebrew-mssql-release`
+     and `ACCEPT_EULA=Y brew install msodbcsql18` (Homebrew will ask you to
+     run `brew trust microsoft/mssql-release` first if the tap isn't trusted yet).
+   - **Ubuntu**:
+     ```
+     sudo apt-get update
+     sudo apt-get install -y python3-venv python3-pip build-essential curl
+
+     # Registers Microsoft's apt repo for this Ubuntu version, then installs
+     # the SQL Server ODBC driver + the ODBC dev headers pyodbc compiles against
+     curl -sSL -O https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/packages-microsoft-prod.deb
+     sudo dpkg -i packages-microsoft-prod.deb
+     rm packages-microsoft-prod.deb
+     sudo apt-get update
+     sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18 unixodbc-dev
+     ```
+   - `make install` only installs the Python packages (`pymysql`, `pyodbc`,
+     `azure-storage-blob`, `requests`) into `.venv` — it does not and cannot
+     install the above, so this step is one-time, per machine, before
+     `make install`.
+1. `make install` (or `pip install -r requirements.txt` directly) — creates
+   `.venv` and installs `pymysql`/`pyodbc` into it.
 2. Copy `config.example.json` to `config.json` and fill in your connection
    details:
    - `mysql.host`, `mysql.port`, `mysql.user`, `mysql.password`, `mysql.database`
    - `mssql.conn_str` — a full pyodbc connection string, e.g.
      `DRIVER={ODBC Driver 18 for SQL Server};SERVER=host;DATABASE=db;UID=user;PWD=pass;TrustServerCertificate=yes`
+   - `azure_blob.connection_string` — the storage account's connection string
+     (Azure Portal → storage account → Access keys), e.g.
+     `DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;EndpointSuffix=core.windows.net`
+   - `azure_blob.container_name` — target container; created automatically on
+     first real (non-dry-run) use if it doesn't already exist
    - `tuning.batch_size` (optional, default 500)
    - `tuning.output_dir` (optional, default `output`)
    - `tuning.checkpoint_file` (optional, default `migration_checkpoint.json`)
@@ -42,12 +74,12 @@ migrate_collections/
    `config.json` holds real credentials and is git-ignored; only
    `config.example.json` should be committed. Use `--config path/to/file.json`
    to point at a different config file (e.g. for a second environment).
-3. Before running for real, populate the campaign/collection-type mapping
-   tables referenced by `resolve_campaign_id()` / `resolve_collection_type_id()`
-   in [migrate_collections/resolvers.py](migrate_collections/resolvers.py) —
-   or rewrite those two functions to match however you actually map v2 IDs
-   to v3 IDs. The table/column names they use are constants at the top of
-   [migrate_collections/constants.py](migrate_collections/constants.py).
+3. `resolve_campaign_id()` / `resolve_collection_type_id()` in
+   [migrate_collections/resolvers.py](migrate_collections/resolvers.py)
+   currently pass v2 ids straight through, since v2 campaign_id/collection_id
+   and v3 CampaignID/CollectionTypeID are the same numeric space in this
+   deployment. If that's ever not true for another environment, rewrite
+   those two functions (e.g. to look up a mapping table).
 
 ## Running
 
@@ -66,6 +98,22 @@ It composes with `--dry-run` (fully safe test) and with a plain run (writes
 off). It also works with `--retry-failed`, capping how many failed ids are
 retried.
 
+## Makefile shortcuts
+
+```
+make install               # pip install -r requirements.txt
+make dry-run                # python main.py --dry-run
+make run                    # python main.py
+make dry-run-limit          # python main.py --dry-run --limit 3 (override with LIMIT=N)
+make run-limit               # python main.py --limit 3 (override with LIMIT=N)
+make retry-failed-dry-run   # python main.py --retry-failed --dry-run
+make retry-failed           # python main.py --retry-failed
+make clean                  # remove output/, migration_checkpoint.json, migration.log
+```
+
+Override `CONFIG=path/to/file.json` on any target to point at a non-default config file, and
+`LIMIT=N` on `dry-run-limit`/`run-limit` to change the row cap (default 3).
+
 ## Resuming
 
 Progress is checkpointed to `migration_checkpoint.json` (path configurable via
@@ -81,6 +129,21 @@ with `--retry-failed` to reprocess only those v2 ids; the file is rewritten to
 contain only whatever still fails after the retry. Rows that succeed on retry
 are appended to `migrated_success.csv` as usual.
 
+## File re-hosting
+
+Every v2 file URL that would be written to a v3 column is first downloaded
+and uploaded to Azure Blob Storage (`blob_storage.py`); the v3 column gets
+the resulting blob URL, never the original v2 URL. Each file's blob path is
+deterministic — `{v3_id}/{v3_column}/{filename}` — so if that blob already
+exists (e.g. from an earlier run interrupted before its batch committed to
+v3), it's reused instead of re-downloaded/re-uploaded. For a brand-new v3
+row, the row is inserted bare (match-key columns only) first to obtain its
+`v3_id`, then files are uploaded, then the row is updated with the resulting
+blob URLs; if upload fails, that bare insert is deleted before the failure
+is recorded, so v3 never ends up with an orphaned, file-less row.
+`--dry-run` skips all blob reads/writes entirely (including container
+creation), same as it skips v3 writes.
+
 ## Output
 
 Three CSVs under `tuning.output_dir` (`migrated_success.csv`, `migrated_failed.csv`,
@@ -93,3 +156,16 @@ v3's `CampaignCollections` has a `CollectionName` column that nothing in v2
 provides — `kiosks_collections` has no name field. Inserts currently leave it
 untouched (relies on it being nullable or having a default). If it's
 `NOT NULL` with no default, inserts will fail until this is addressed.
+
+
+Ubuntu Installation
+
+sudo apt-get update
+sudo apt-get install -y python3-venv python3-pip build-essential curl git
+
+# 2. Microsoft's SQL Server ODBC driver (msodbcsql18) + dev headers pyodbc needs to compile
+curl -sSL -O https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/packages-microsoft-prod.deb
+sudo dpkg -i packages-microsoft-prod.deb
+rm packages-microsoft-prod.deb
+sudo apt-get update
+sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18 unixodbc-dev

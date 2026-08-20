@@ -9,6 +9,10 @@
   "mssql": {
     "conn_str": "DRIVER={ODBC Driver 18 for SQL Server};SERVER=your-server;DATABASE=your-db;UID=your-user;PWD=your-password;TrustServerCertificate=yes"
   },
+  "azure_blob": {
+    "connection_string": "DefaultEndpointsProtocol=https;AccountName=your-account;AccountKey=your-key;EndpointSuffix=core.windows.net",
+    "container_name": "your-container"
+  },
   "tuning": {
     "batch_size": 500,
     "output_dir": "output",

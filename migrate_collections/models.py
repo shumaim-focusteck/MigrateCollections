@@ -1,7 +1,7 @@
 """Shared dataclasses passed between the processor and the batch runner."""
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Dict, Optional
 
 
 @dataclass
@@ -27,4 +27,9 @@ class RowResult:
     campaign_id_v3: Optional[int] = None
     collection_id_v2: Optional[int] = None
     collection_type_id: Optional[int] = None
-    columns_written: List[str] = field(default_factory=list)
+    # Both keyed by v3 column name (e.g. "TopFileUrl"). source_by_column holds
+    # every file URL v2 actually had, whether or not it ended up written this
+    # run; written_by_column holds only the ones actually written (a column
+    # present in source but absent here was skipped as already-populated).
+    source_by_column: Dict[str, str] = field(default_factory=dict)
+    written_by_column: Dict[str, str] = field(default_factory=dict)

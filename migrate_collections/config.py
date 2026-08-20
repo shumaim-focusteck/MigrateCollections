@@ -16,6 +16,8 @@ class Config:
     mysql_password: str
     mysql_database: str
     mssql_conn_str: str
+    azure_blob_conn_str: str
+    azure_blob_container: str
     batch_size: int
     output_dir: Path
     checkpoint_file: Path
@@ -39,6 +41,7 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> Config:
     data: Dict[str, Any] = json.loads(config_path.read_text(encoding="utf-8"))
     mysql = data.get("mysql", {})
     mssql = data.get("mssql", {})
+    azure_blob = data.get("azure_blob", {})
     tuning = data.get("tuning", {})
     filters = data.get("filters", {})
 
@@ -52,6 +55,11 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> Config:
         mysql_password=mysql["password"],
         mysql_database=mysql["database"],
         mssql_conn_str=mssql["conn_str"],
+        # Optional: not needed for --dry-run, which never touches blob
+        # storage. Required (validated in blob_storage.connect_blob_container)
+        # for a real run.
+        azure_blob_conn_str=azure_blob.get("connection_string", ""),
+        azure_blob_container=azure_blob.get("container_name", ""),
         batch_size=int(tuning.get("batch_size", 500)),
         output_dir=Path(tuning.get("output_dir", "output")),
         checkpoint_file=Path(tuning.get("checkpoint_file", "migration_checkpoint.json")),
