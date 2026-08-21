@@ -15,6 +15,7 @@ leaving a stray row.
 """
 
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -226,6 +227,10 @@ def record_result(
             *_file_url_cells(result.source_by_column, result.written_by_column),
             result.error or "", now,
         ])
+        logging.warning(
+            "Row failed v2 id=%s campaign_id=%s reason=%s error=%s",
+            result.v2_id, result.campaign_id_v2, result.reason, result.error or "",
+        )
         stats.failed += 1
 
     # Regardless of the row's main outcome above, a success/failed row can

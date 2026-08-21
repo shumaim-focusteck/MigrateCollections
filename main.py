@@ -74,7 +74,7 @@ def main() -> None:
     # --retry-failed depends on reading it back in and rewriting it.
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_file = _timestamped(cfg.log_file, run_id)
-    setup_logging(log_file)
+    error_log_file = setup_logging(log_file)
     # 2. Ctrl+C during a run should finish the in-flight batch and exit cleanly
     #    instead of dying mid-transaction; see migrate_collections/shutdown.py.
     install_sigint_handler()
@@ -140,7 +140,7 @@ def main() -> None:
         mssql_conn.close()
 
     elapsed = time.monotonic() - start_time
-    print_summary(stats, elapsed, success_path, failed_path, skipped_path, args.dry_run)
+    print_summary(stats, elapsed, success_path, failed_path, skipped_path, error_log_file, args.dry_run)
 
 
 if __name__ == "__main__":

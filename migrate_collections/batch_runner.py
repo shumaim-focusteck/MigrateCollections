@@ -48,6 +48,10 @@ def run_batch(
             # advance even if some rows in the batch fail or get skipped.
             max_id = row["id"] if max_id is None else max(max_id, row["id"])
 
+            logging.info(
+                "Processing v2 id=%s campaign_id=%s collection_id=%s",
+                row["id"], row.get("campaign_id"), row.get("collection_id"),
+            )
             try:
                 result = process_row(row, mssql_cursor, blob_container, campaign_cache, collection_cache, dry_run)
             except Exception as exc:  # noqa: BLE001 - a single row must not abort the batch
