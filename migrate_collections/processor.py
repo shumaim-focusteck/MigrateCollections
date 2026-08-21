@@ -149,8 +149,9 @@ def process_row(
             # failed row never leaves an orphaned, file-less row behind.
             delete_v3_row(mssql_cursor, v3_id)
         error_message = "; ".join(f"{col}: {err}" for col, err in upload_errors.items())
+        reason = "blob_upload_failed_partial" if to_fill else "blob_upload_failed_full"
         return RowResult(
-            status="failed", v2_id=v2_id, reason="blob_upload_failed", error=error_message,
+            status="failed", v2_id=v2_id, reason=reason, error=error_message,
             campaign_id_v2=v2_campaign_id, campaign_id_v3=v3_campaign_id, collection_id_v2=v2_collection_id,
             # source_by_column: every file v2 had for this row.
             # written_by_column: only the columns that actually succeeded —
